@@ -147,6 +147,7 @@ async function main() {
 
     if (newArticles.length === 0) {
       console.log('새 글 없음');
+      await sendSlackMessage('코스트코 쇼핑후기 새 글 없음');
       return;
     }
 
