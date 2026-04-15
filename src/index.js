@@ -4,8 +4,6 @@ const path = require('path');
 const https = require('https');
 
 const STATE_FILE = path.join(__dirname, '../data/last_seen.json');
-const CAFE_ID = 'costco12';
-const BOARD_NAME = '코스트코 쇼핑후기';
 const SLACK_WEBHOOK = process.env.SLACK_WEBHOOK_URL;
 
 // ─── State Management ────────────────────────────────────────────────────────
@@ -48,101 +46,65 @@ async function sendSlackMessage(text) {
   });
 }
 
-// ─── Naver Login ─────────────────────────────────────────────────────────────
+// ─── Naver Cookie Login ───────────────────────────────────────────────────────
 
-async function naverLogin(page) {
-  await page.goto('https://nid.naver.com/nidlogin.login?mode=form', {
-    waitUntil: 'domcontentloaded',
-  });
-
-  // Naver 봇 감지 우회: native setter로 값 입력
-  await page.evaluate((val) => {
-    const el = document.querySelector('#id');
-    Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')
-      .set.call(el, val);
-    el.dispatchEvent(new Event('input', { bubbles: true }));
-  }, process.env.NAVER_ID);
-
-  await page.evaluate((val) => {
-    const el = document.querySelector('#pw');
-    Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')
-      .set.call(el, val);
-    el.dispatchEvent(new Event('input', { bubbles: true }));
-  }, process.env.NAVER_PW);
-
-  await page.click('.btn_login');
-  await page.waitForTimeout(3000);
-
-  const url = page.url();
-  if (url.includes('nidlogin') || url.includes('/login')) {
-    throw new Error('네이버 로그인 실패. 아이디/비밀번호를 확인하세요.');
+async function loadNaverCookies(context) {
+  const cookieBase64 = process.env.NAVER_COOKIES;
+  if (!cookieBase64) {
+    throw new Error('NAVER_COOKIES 환경변수가 없습니다. save-cookies.js를 먼저 실행하세요.');
   }
+  const cookies = JSON.parse(Buffer.from(cookieBase64, 'base64').toString('utf8'));
+  await context.addCookies(cookies);
+  console.log('쿠키 로드 완료');
+}
 
-  console.log('네이버 로그인 성공');
+async function verifyCafeAccess(page) {
+  await page.goto('https://cafe.naver.com/costco12', { waitUntil: 'domcontentloaded' });
+  await page.waitForTimeout(2000);
+
+  // 로그인 페이지로 리다이렉트됐으면 쿠키 만료
+  if (page.url().includes('nidlogin') || page.url().includes('/login')) {
+    throw new Error('쿠키가 만료되었습니다. save-cookies.js를 다시 실행해서 NAVER_COOKIES를 갱신하세요.');
+  }
+  console.log('카페 접근 확인');
 }
 
 // ─── Cafe Scraping ───────────────────────────────────────────────────────────
 
+// 카페 클럽 ID, 메뉴 ID (고정값)
+const CLUB_ID = '25559875';
+const MENU_ID = '12';
+const BOARD_URL = `https://cafe.naver.com/f-e/cafes/${CLUB_ID}/menus/${MENU_ID}?viewType=L`;
+
 async function scrapeBoard(page) {
-  // 카페 메인 접속 후 게시판 URL 추출
-  await page.goto(`https://cafe.naver.com/${CAFE_ID}`, {
-    waitUntil: 'domcontentloaded',
-  });
+  await page.goto(BOARD_URL, { waitUntil: 'networkidle' });
+  await page.waitForTimeout(3000);
 
-  await page.waitForSelector('#cafe_main', { timeout: 10000 });
-
-  // iframe에서 게시판 링크 찾기
-  const frame = page.frameLocator('#cafe_main');
-
-  const boardHref = await frame
-    .locator(`a`)
-    .evaluateAll((anchors, name) => {
-      const el = anchors.find((a) => a.textContent.trim() === name);
-      return el ? el.href : null;
-    }, BOARD_NAME);
-
-  if (!boardHref) {
-    throw new Error(`게시판을 찾을 수 없습니다: ${BOARD_NAME}`);
-  }
-
-  console.log(`게시판 URL: ${boardHref}`);
-
-  // 게시판 직접 접속 (iframe 우회)
-  await page.goto(boardHref, { waitUntil: 'domcontentloaded' });
-  await page.waitForTimeout(2000);
-
-  // 게시글 추출
-  const articles = await page.evaluate(() => {
-    const rows = document.querySelectorAll(
-      '.article-list tbody tr, .board-list tbody tr'
-    );
+  // 게시글 링크 추출 (댓글 링크 제외)
+  const articles = await page.evaluate((clubId) => {
+    const pattern = new RegExp(`/f-e/cafes/${clubId}/articles/(\\d+)\\?`);
+    const seen = new Set();
     const results = [];
 
-    rows.forEach((row) => {
-      // 공지사항 제외
-      if (row.classList.contains('notice') || row.querySelector('.ico_notice')) {
-        return;
-      }
+    document.querySelectorAll(`a[href*="/articles/"]`).forEach((a) => {
+      // 댓글 링크 제외
+      if (a.href.includes('commentFocus')) return;
 
-      const titleEl =
-        row.querySelector('.article-title a') ||
-        row.querySelector('.b-title a') ||
-        row.querySelector('td.td_article a');
+      const match = a.href.match(pattern);
+      if (!match) return;
 
-      if (!titleEl) return;
+      const id = match[1];
+      if (seen.has(id)) return;
+      seen.add(id);
 
-      const href = titleEl.href || '';
-      const title = titleEl.textContent.trim();
-      const idMatch = href.match(/articleid=(\d+)/i) || href.match(/\/(\d+)(?:\?|$)/);
-      const id = idMatch ? idMatch[1] : '';
+      const title = a.textContent.trim();
+      if (!title) return;
 
-      if (id && title) {
-        results.push({ id, title, link: href });
-      }
+      results.push({ id, title, link: `https://cafe.naver.com/costco12/${id}` });
     });
 
     return results;
-  });
+  }, CLUB_ID);
 
   return articles;
 }
@@ -153,8 +115,8 @@ async function main() {
   if (!SLACK_WEBHOOK) {
     throw new Error('SLACK_WEBHOOK_URL 환경변수가 없습니다.');
   }
-  if (!process.env.NAVER_ID || !process.env.NAVER_PW) {
-    throw new Error('NAVER_ID 또는 NAVER_PW 환경변수가 없습니다.');
+  if (!process.env.NAVER_COOKIES) {
+    throw new Error('NAVER_COOKIES 환경변수가 없습니다.');
   }
 
   const browser = await chromium.launch({
@@ -173,7 +135,8 @@ async function main() {
   try {
     const state = loadState();
 
-    await naverLogin(page);
+    await loadNaverCookies(context);
+    await verifyCafeAccess(page);
     const articles = await scrapeBoard(page);
 
     console.log(`총 ${articles.length}개 글 발견`);
