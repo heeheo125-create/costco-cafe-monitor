@@ -1,0 +1,12 @@
+{
+  "name": "costco-cafe-monitor",
+  "version": "1.0.0",
+  "description": "Naver Cafe monitor for Costco deals",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "playwright": "^1.44.0"
+  }
+}

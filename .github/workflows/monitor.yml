@@ -1,0 +1,43 @@
+name: Costco Cafe Monitor
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'  # 30분마다 실행
+  workflow_dispatch:         # 수동 실행 버튼
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright Chromium
+        run: npx playwright install chromium --with-deps
+
+      - name: Run monitor
+        env:
+          NAVER_ID: ${{ secrets.NAVER_ID }}
+          NAVER_PW: ${{ secrets.NAVER_PW }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: node src/index.js
+
+      - name: Save state (마지막 확인 글 ID 저장)
+        run: |
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git add data/last_seen.json
+          git diff --staged --quiet || git commit -m "chore: update last seen articles [skip ci]"
+          git push
