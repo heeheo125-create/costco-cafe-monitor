@@ -90,6 +90,9 @@ async function scrapeBoard(page) {
       // 댓글 링크 제외
       if (a.href.includes('commentFocus')) return;
 
+      // 다른 게시판 글 제외 (menuid가 다른 경우)
+      if (a.href.includes('menuid=') && !a.href.includes('menuid=12')) return;
+
       const match = a.href.match(pattern);
       if (!match) return;
 
